@@ -1,0 +1,1272 @@
+;***************************************************************************************************************************
+;configurações inciais do programa
+list       p=16F877             ; diretiva list para definir o processador
+#include  <p16F877.inc>         ; definições de variáveis do processador
+	__CONFIG _CP_OFF & _WDT_OFF & _BODEN_ON & _PWRTE_ON & _XT_OSC & _WRT_ENABLE_ON & _LVP_OFF & _CPD_OFF
+;***************************************************************************************************************************
+;criação de variáveis sempre apartir do endereço 20H pois endereços menos que 20h são os registradores internos do PIC
+TEMP1            EQU 20H
+TEMP2            EQU 21H
+RESULTADO        EQU 22H
+AUX1             EQU 23H
+UNIDADE_METALICA EQU 24H 
+DEZENA_METALICA  EQU 25H
+UNIDADE_PLASTICA EQU 26H
+DEZENA_PLASTICA  EQU 27H
+AUX1_PLASTICA    EQU 28H
+
+#DEFINE RS      PORTC,4  ;algumas definições para facilitar entendimento e futuras modificações
+#DEFINE E       PORTC,5
+#DEFINE DISPLAY PORTD
+;***************************************************************************************************************************
+org          00h  ;vetor de reset (inicio obrigatorio em 00h caso contrario programa não roda)
+GOTO        INICIO
+org          04h  ;interrupção
+RETFIE
+;***************************************************************************************************************************
+INICIO
+   BSF STATUS,RP0 ;configurações iniciais
+   MOVLW 06H
+   MOVWF ADCON1
+   CLRF  TRISA
+   MOVLW 1EH
+   MOVWF TRISB 
+   CLRF  TRISC
+   CLRF  TRISD
+   CLRF  TRISE
+   CLRF OPTION_REG
+   BCF STATUS,RP0
+   CALL INICIA_LCD
+   
+   MOVLW 0H      ;inicialização de variáveis
+   CLRF AUX1
+   MOVLW 0H
+   MOVWF AUX1_PLASTICA
+   MOVLW 0H
+   MOVWF UNIDADE_METALICA
+   MOVLW 0H
+   MOVWF DEZENA_METALICA
+   MOVLW 0
+   MOVWF RESULTADO
+   MOVLW 0H
+   MOVWF UNIDADE_PLASTICA
+   MOVLW 0H
+   MOVWF DEZENA_PLASTICA
+   
+;****************************************************************************************************************************
+;                                                     *************
+;                                                     *  PROGRAMA *
+;                                                     *************
+;****************************************************************************************************************************
+
+;---------------------------------responsável por verificar condições para acionamento---------------------------------------
+
+LOOP_LCD
+    CALL INTERFACE_INICIAL ;imprimi mensagem:seleção delisgada, sendo seleção uma etapa do processo industrial
+    
+LABEL_0 ;label_0 é responsavel por apenas testar chave on/off e relé termico para seleção entrar em funcionamento
+    BTFSC PORTB,1 ;Chave ON/OFF  ;1-> desliga
+                                 ;0-> liga
+    GOTO LABEL_0  ;chave desligada 1 vai pra LABEL_0 de forma que o programa não prossiga caso não ligada chave 
+                  ;se chave ligada 0 salta linha testando relé termico  
+    BTFSC PORTB,4 ;Relé termico  ;1-> atuado
+                                 ;0-> desatuado
+    CALL VERIFICA_PROTEÇÃO_INICIAL ;relé atuado cai no laço verifica_proteção_inicial que não permite o programa prossegir enquando 
+                                   ;relé não for desatuado   
+
+
+;---------------------------------------------seleção entra em funcionamento-------------------------------------------------
+    
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualização foi dividida em duas sub-rotinas pois juntas teria mais de 8 call dentro de uma so sub-rotina
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA
+    BSF PORTA,1 ;motor é ligado    
+
+LABEL_1   
+    CALL VERIFICA_CHAVE    ;verificação de chave e relé são feitas constantemente através destas sub-rotinas
+    CALL VERIFICA_PROTECAO ;ambas funcionam prendendo o programa até que satisfaça condição de funcionamento 
+    CALL VERIFICACAO_DE_ERRO_1 ;erro_1 - defeito em sensor
+    CALL VERIFICACAO_DE_ERRO_2 ;erro_2 - falta de embalagem
+    BTFSC PORTB,3 ;detecta plástico e metal sensor óptico; 1-desatuado
+                                                         ; 0->atuado
+    GOTO LABEL_1 ;se desatuado portb,3 é 1 então não salta próxima linha, vai para label_1 de forma que o programa não prossiga 
+                 ;até ser encontrado objeto e no label_1 é feito verificação de chave e verificação de proteção 
+                 ;se atuado portb,3 é 0 e salta próxima linha de forma a fazer o teste do sensor indutivo que detecta apenas metal
+    BTFSC PORTB,2;1->desatuado
+                 ;0->atuado
+    GOTO LABEL_2 ;se portb,2 é 0 desatuado o segundo sensor não detectou material sendo então o material de plástico indo para label_2
+                 ;e dando tratamento adequando a essa situação 
+    
+
+;------------------------------------------------tratamento a embalagem metálica----------------------------------------------------
+
+INCREMENTA_EMBALGEM_METALICA  ;label responsável por atualização de quantidade de embalagens metálicas
+
+    INCF UNIDADE_METALICA,W
+    MOVWF UNIDADE_METALICA  ;incrementa unidade_metalica        
+    SUBLW 0ah       
+    MOVWF AUX1     ;move para aux1 subtração de unidade metálica por 10
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualizações do lcd
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA
+    DECFSZ AUX1,F  ;sendo 9, 10-9=1 saltando próxima linha
+    GOTO LABEL_1   ;se subtração diferente de 1 significa que unidade metálica ainda não chegou a 9, indo para label_1 
+                   ;de forma a não incrementar dezena metálica enquanto unidade metálica não atingir 9
+
+;quando unidade é 9 salta práxima linha não voltando a label_1 então os numeros com terminação 9 são impressos neste ponto
+;antes de unidade ser zerada
+    MOVLW 0H
+    MOVWF UNIDADE_METALICA  ;unidade é zerada
+    MOVLW 1H
+    MOVWF AUX1     
+    INCF DEZENA_METALICA,W  
+    MOVWF DEZENA_METALICA  ;incrementa dezena metálica
+    SUBLW 0ah
+    MOVWF AUX1    ;move para aux1 subtração de dezena metálica por 10
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualização do lcd
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA  
+    DECFSZ AUX1,F ;sendo 9, 10-9=1 saltando próxima linha
+    GOTO LABEL_1  ;se subtração diferente de 1 significa que dezena metálica ainda não chegou a 9, indo para label_1
+                  ;fazendo com que dezena metálica será incrementada de 1 somente quando unidade for incrementada em 1 de 0 a 9 
+DEZENA_VALENDO_9 ;tratamento aos numeros com dezena valendo 9
+;quando dezena metálica é 9 salta próxima linha não voltando a label_1 então os numeros com inicio 9 são impressos neste ponto
+;a cada incremento de unidade com dezena valendo 9
+    MOVLW 1H      ;se dezena é 9 saltou a próxima linha
+    MOVWF AUX1    ;então unidade tem quer incrementada em 1 de 0 a 9 pela ultima vez 
+    INCF UNIDADE_METALICA,W
+    MOVWF UNIDADE_METALICA
+    SUBLW 0ah
+    MOVWF AUX1
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualizações do lcd
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA  
+    DECFSZ AUX1,F
+    GOTO DEZENA_VALENDO_9
+    CALL ZERAR_CONTAGEM  ;chegou a 99 unidade e dezena é zerada simulando que são selecionadas 99 embalagem por vez no processo de fabricação
+    CALL DELAY_TEST    
+    GOTO LABEL_1
+
+    
+;--------------------------------------------------tratamendo de embalagem plástica---------------------------------------------------
+
+LABEL_2 ;label responsável por atualização de quantidade de embalagens plásticas
+    
+    INCF UNIDADE_PLASTICA,W
+    MOVWF UNIDADE_PLASTICA   ;incrementa unidade_plastica
+    SUBLW 0ah
+    MOVWF AUX1_PLASTICA    ;move para aux1 subtração de unidade plástica por 10 
+    CALL NUMERO_DE_EMBALAGEM_METALICA  ;atualizações do lcd
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA
+    DECFSZ AUX1_PLASTICA,F ;sendo 9, 10-9=1 saltando próxima linha  
+    GOTO LABEL_3           ;se subtração diferente de 1 significa que unidade plástica ainda não chegou a 9, indo para label_3  
+                           ;de forma a não incrementar dezena plástica enquanto unidade plástica não atigir 9 
+;quando unidade é 9 salta próxima linha não indo para a label_3 então os numeros com terminação 9 são impressos neste ponto
+;antes de unidade ser zerada
+    MOVLW 0H         
+    MOVWF UNIDADE_PLASTICA  ;unidade plástica é zerada
+    MOVLW 1H
+    MOVWF AUX1_PLASTICA     
+    INCF DEZENA_PLASTICA,W  ;incrementa dezena_plastica
+    MOVWF DEZENA_PLASTICA  
+    SUBLW 0ah                 
+    MOVWF AUX1_PLASTICA    ;move para aux1 subtração de dezena plástica por 10
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualizações do lcd
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA  
+    DECFSZ AUX1_PLASTICA,F ;sendo 9, 10-9=1 saltando próxima linha
+    GOTO LABEL_3           ;se subtração diferente de 1 significa que dezena plástica ainda não chegou a 9, indo para label_3
+                  ;fazendo com que dezena plástica será incrementada de 1 somente quando unidade for incrementada em 1 de 0 a 9 
+
+COND_PLASTICA ;tratamento aos numeros com dezena valendo 9 
+;quando dezena plástica é 9 salta próxima linha não indo para label_3 então os numeros com inicio 9 são impressos neste ponto
+;a cada incremento de unidade com dezena valendo 9            
+    MOVLW 1H
+    MOVWF AUX1_PLASTICA   
+    INCF UNIDADE_PLASTICA,W ;incrementa unidade_plastica
+    MOVWF UNIDADE_PLASTICA
+    SUBLW 0ah
+    MOVWF AUX1_PLASTICA     ;move para aux1 subtração de unidade plástica por 10 
+    CALL NUMERO_DE_EMBALAGEM_METALICA ;atualizações no lcd pois o programa fica preso neste laço de 90 a 99
+    CALL NUMERO_DE_EMBALAGEM_PLASTICA  
+    DECFSZ AUX1_PLASTICA,F  ;sendo 9, 10-9=1 saltando próxima linha   
+    GOTO COND_PLASTICA  ;se subtração diferente de 1 significa que dezena plástica ainda não chegou a 9, indo para cond_plástica  
+                        ;de forma a não zerar unidade e dezena plástica enquanto unidade plástica não atigir 9 
+    CALL ZERAR_CONTAGEM ;chegou a 99 unidade e dezena é zerada simulando que são selecionadas 99 embalagens por vez no processo de fabricação
+    
+LABEL_3
+;chama rotina de interrupção de timer0 de 2 segundos
+    BSF PORTA,2 ;liga led verde que sinaliza o motor
+;atua e desliga led amarela
+    GOTO LABEL_1 ;vai pra label_1 de forma que o processo de virificão funcione enquanto não encontrar sistema de proteção atuado
+     
+;********************************************************************************************************************************
+;                                                     *****************                                                         ;
+;                                                     *  SUB-ROTINAS  *                                                         ;                                                       
+;                                                     *****************                                                         ;  
+;********************************************************************************************************************************
+
+VERIFICA_PROTEÇÃO_INICIAL ;responsável por não permitir ligar(ON) enquanto relé estiver atuado
+    BTFSC PORTB,4 ;relé termico 1->atuado
+                  ;             0->desatuado
+    GOTO INTERFACE_PROTECAO_ATUADA ;se atuado vai para interface_protecao_atuada 
+    RETURN          ;se relé desatuado o programa já retorna fazendo selecao entrar em funcionamento
+                   
+INTERFACE_PROTECAO_ATUADA     ;interface é feita fora do laço abaixo para ser impresso apenas uma vez     
+    CALL PROTECAO_ATUADA      ;imprimi interface no lcd  
+
+ENQUANTO_PROTECAO_ATUADA_FACA ;prende o programa enquanto relé estiver atuado
+    BTFSC PORTB,4             ;le relé
+    GOTO ENQUANTO_PROTECAO_ATUADA_FACA ;se atuado 1 vai para
+    BTFSC PORTB,1;novamente ler chave evitando com que chave desligada e relé passar de 1 para 0 retorne ao programa já 
+                 ;inicializando o programa, se inicializado apenas messagem de interface é mostrada pele fato de execussão 
+                 ;se muito rápida 
+    GOTO ENQUANTO_PROTECAO_ATUADA_FACA  
+      
+RETURN   ;se relé desatuado e chave ligada retorna permitindo selecao entrar em funcionamento
+
+;-----------------------------------------------------------------------------------------------------------------------------------   
+
+                       ;relé 1->atuado
+VERIFICA_PROTECAO      ;     0->desatuado  
+    BTFSS PORTB,4 ;relé ta atuado?   
+    RETURN        ;não! retorna      
+PISCA_PISCA_LED_VERMELHO ;sim!
+    BCF   PORTA,1
+    BSF   PORTA,3       ;prende o programa enquanto não for desatuado sinalizando pelo led vermelho
+    CALL  DELAY_TEST    ;seta, conta tempo, zera conta tempo.
+    BCF   PORTA,3
+    CALL  DELAY_TEST    
+    BTFSC PORTB,4   ;relé está desatuado?
+    GOTO PISCA_PISCA_LED_VERMELHO ;não! se atuado continua piscando lede vermelho para sinalização
+;se desatuado é feito configuração para retorno
+;atribuo um valor a uma variavel para quando retornar ter uma referencia para mandar o programa pra label_3 testando o valor dessa variavel
+;pelo fato de que não podemos colocar um goto dentro de uma subrotina  
+    BSF PORTA,1  
+RETURN
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+VERIFICA_CHAVE
+    BTFSS PORTB,1  ;1->desligado
+                   ;0->ligado chave precionada salta linha 
+    RETURN                   
+DESLIGA_SELECAO   ;se desligado saltou próxima linha prendendo o programa enquanto não for ligado novamente
+    BCF PORTA,1   
+    BTFSC PORTB,1 ;chave foi ligada?   
+    GOTO DESLIGA_SELECAO ;nao! vai para DESLIGA_SELECAO não saltando próxima linha enquanto não for ligada
+    BSF PORTA,1          ;sim! liga selecao(motor) e retorna
+RETURN 
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+VERIFICACAO_DE_ERRO_1 ;erro_1 sensor óptico desligado e sensor indutivo ligado
+    BTFSC PORTB,2 ;sensor indutivo está ligado?
+    RETURN        ;se não estiver ligado retorna da verificação de erro
+    GOTO LER_SENSOR_OPTICO ;se estiver ligado ler se sensor óptico 
+
+LER_SENSOR_OPTICO ;se sensor óptico não detectar embalagem há defeito com sensores
+    BTFSS PORTB,3 ;se detectado embalagem prende o programa enquanto não for corrigido defeito
+    RETURN        ;se não detectado embalagem retorna 
+
+INTERFACE_ERRO_1      ;se sensor indutivo ligado saltou próxima indicando erro em sensores    
+    CALL ERRO_1 ;interface defeito com sensores
+    BCF PORTA,1 ;motor e parado até normalidade seja estabelicida
+
+ENQUANTO_ERRO_1_FACA ;é deito leitura do sensor óptico até que seja encontrado ligado 0
+    BTFSC PORTB,3
+    GOTO ENQUANTO_ERRO_1_FACA ;se desligado retornando a enquanto_erro_1_faça impedindo prosseguir até que erro seja reparado
+    BSF PORTA,1 ;liga motor seleção entra em funcionamento novamente
+    RETURN  ;se erro reparado sensor óptico está atuado retornando de forma que sempre é verificado o erro na execusão do programa
+   
+;---------------------------------------------------------------------------------------------------------------------------------
+
+VERIFICACAO_DE_ERRO_2 ;falta de material
+    BTFSS PORTB,3 ;salta próxima linha se sensor desligado
+    RETURN        ;se sensor óptico ligado retorna
+    CALL DELAY_TEST ;se sensor desligado é iniciado contagem do tempo de tolerância do processo
+    CALL DELAY_TEST
+    CALL DELAY_TEST
+    BTFSS PORTB,3   ;se tempo estourado e sensor ainda estiver desligado salta próxima linha
+    RETURN          ;se tempo estourado e sensor ja estiver detectado embalagem isso é ligado retorna
+    CALL ERRO_2   ;interface falta de material
+    
+ENQUANTO_ERRO_2_FACA ;enquanto sensor não detectar embalagem com sistema em funcionamento mensagem de erro será mostrada      
+    CALL VERIFICA_CHAVE ;de forma que a verificação da chave e de proteção tem que ser chamadas pois o seleção esta em funcionamento
+    CALL VERIFICA_PROTECAO 
+    BTFSC PORTB,3  ;se sensor óptico ligado 0, foi detectado embalagem então salta próxima linha retornando 
+    GOTO ENQUANTO_ERRO_2_FACA ;se sensor óptico desligado prende o programa enquanto não for corrigido defeito
+RETURN 
+  
+;--------------------------------------------------------------------------------------------------------------------------------
+
+DELAY_ISMS     ;temporização utilizada para escrita no lcd   
+    MOVLW 10H
+    MOVWF TEMP1
+DLY1
+    MOVLW 50H
+    MOVWF TEMP2
+DLY2
+    DECFSZ TEMP2,F
+    GOTO DLY2
+    DECFSZ TEMP1,F
+    GOTO DLY1
+RETURN
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+WR_INST     ;coloca o display de lcd no modo de instrução
+            ;ENTRADA :W<-INSTRUÇÃO
+    BCF RS  ;função RS seleção 1-Dado  0-instrução, modo de instrução 
+    NOP     ;alguns ciclos de máquina 
+    NOP
+    NOP
+    BSF E   ;função E Chip select 1-habilita 0-desabilita, habilita o display
+    NOP     ;alguns ciclos de máquina 
+    NOP
+    NOP
+    MOVWF DISPLAY ;PORTD 
+    BCF E   ;função E Chip select 1-habilita 0-desabilita, desabilita o display 
+RETURN 
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+WR_DADO      ;coloca o display de lcd no modo de dados
+             ;ENTRADA :W<-DADO
+    BSF RS   ;função RS seleção 1-Dado  0-instrução, modo de dado 
+    NOP      ;alguns ciclos de máquina
+    NOP
+    NOP
+    BSF E    ;função E Chip select 1-habilita 0-desabilita, habilita o display
+    NOP
+    NOP
+    NOP
+    MOVWF DISPLAY ;PORTD 
+    BCF E    ;função E Chip select 1-habilita 0-desabilita, desabilita o display
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+INICIA_LCD            ;rotina de inicialição do módulo lcd
+;38H 38H 06H 0EH 01H  ;Inicialização para sistemas 8 bits de dados (5 instruções)
+    MOVLW 38H         ;fixação das condições de utilização 2 linha 5x7 (8 bits)
+    CALL WR_INST      ;coloca no modo de instrução para envar informação ao PORTD
+    CALL DELAY_ISMS   ;pequeno retardo
+    MOVLW 38H         ;fixação das condições de utilização 2 linha 5x7 (8 bits)
+    CALL WR_INST      ;coloca no modo de instrução para enviar informação ao PORTD
+    CALL DELAY_ISMS   ;pequeno retardo
+    MOVLW 06H         ;modo de operação, escreve deslocando o cursor para a direita 
+    CALL WR_INST      ;coloca no modo de instrução para enviar informação ao PORTD
+    CALL DELAY_ISMS   ;pequeno retardo
+    MOVLW 0EH         ;controle do display Display aceso c/ cursor fixo 
+    CALL WR_INST      ;coloca no modo de instrução para enviar informação ao PORTD
+    CALL DELAY_ISMS   ;pequeno retardo
+    MOVLW 01H         ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST      ;coloca no modo de instrução para enviar informação ao PORTD
+    CALL DELAY_ISMS   ;pequeno retardo
+RETURN
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+DELAY_TEST       ;temporizador usado para simular o tempo que a embalagem permanece na frente do sensor    
+    MOVLW 50H
+    MOVWF TEMP1
+T_DLY1
+    MOVLW 100H
+    MOVWF TEMP2
+T_DLY2
+    DECFSZ TEMP2,F
+    GOTO T_DLY2
+    DECFSZ TEMP1,F
+    GOTO T_DLY1
+RETURN
+    
+;-----------------------------------------------------------------------------------------------------------------------------------    
+ 
+IMPRIMI_UNIDADE_METALICA_NO_LCD ;sub-rotina responsável por verficar o valor da unidade metalica
+    MOVF UNIDADE_METALICA,W 
+    SUBLW 02H
+    MOVWF RESULTADO       ;move para resultado subtração de unidade metalica por 2
+    DECFSZ RESULTADO,F    ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_2;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 31H                   ;sendo 1, 2-1=1 saltou próxima linha o que significa que unidade metalica é 1   
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 1  
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_2  ;verifica se valor de unidade metalica é 2
+    MOVF UNIDADE_METALICA,W
+    SUBLW 03H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 3
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_METALICA_3 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 32H                    ;sendo 2, 3-2=1 saltou próxima linha o que significa que unidade metalica é 2  
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 2
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_3  ;verifica se valor de unidade metalica é 3
+    MOVF UNIDADE_METALICA,W
+    SUBLW 04H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 4
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_METALICA_4 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 33H                    ;sendo 3, 4-3=1 saltou próxima linha o que significa que unidade metalica é 3 
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 3
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_4  ;verifica se valor de unidade metalica é 4 
+    MOVF UNIDADE_METALICA,W
+    SUBLW 05H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 5
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_METALICA_5 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 34H                    ;sendo 4, 5-4=1 saltou próxima linha o que significa que unidade metalica é 4
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 4
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_5  ;verifica se valor de unidade metalica é 5
+    MOVF UNIDADE_METALICA,W
+    SUBLW 06H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 6
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_6 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 35H                    ;sendo 5, 6-5=1 saltou próxima linha o que significa que unidade metalica é 5
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 5
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_6  ;verifica se valor de unidade metalica é 6
+    MOVF UNIDADE_METALICA,W 
+    SUBLW 07H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 7   
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_7 ;se diferente de 1 não salta próxima linha verifica demais valores 
+    MOVLW 36H                    ;sendo 6, 7-6=1 saltou próxima linha o que significa que unidade metalica é 6        
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 6
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_7  ;verifica se valor de unidade metalica é 7
+    MOVF UNIDADE_METALICA,W
+    SUBLW 08H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 8  
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_8 ;se diferente de 1 não salta próxima linha verifica demais valores 
+    MOVLW 37H                    ;sendo 7, 8-7=1 saltou próxima linha o que significa que unidade metalica é 7    
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 8
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_8  ;verifica se valor de unidade metalica é 8
+    MOVF UNIDADE_METALICA,W
+    SUBLW 09H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 9  
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_9 ;se diferente de 1 não salta próxima linha verifica demais valores 
+    MOVLW 38H                    ;sendo 8, 9-8=1 saltou próxima linha o que significa que unidade metalica é 8
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 9
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_UNIDADE_METALICA_9  ;verifica se valor de unidade metalica é 9
+    MOVF UNIDADE_METALICA,W
+    SUBLW 0ah
+    MOVWF RESULTADO      ;move para resultado subtração de unidade metalica por 10
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_UNIDADE_METALICA_0 ;se diferente de 1 não salta próxima linha verifica demais valores  
+    MOVLW 39H                    ;sendo 9, 10-9=1 saltou próxima linha o que significa que unidade metalica é 9
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 9
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna  
+CASE_UNIDADE_METALICA_0 ;não sendo valores ja verificados é 0
+    MOVLW 30H           ;é impresso então no lcd código ASCII referente ao valor 0  
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+IMPRIMI_DEZENA_METALICA_NO_LCD ;sub-rotina responsável por verficar o valor da dezena metalica
+    MOVF DEZENA_METALICA,W 
+    SUBLW 02H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 2
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_DEZENA_METALICA_2 ;se diferente de 1 não salta próxima linha verifica demais valores   
+    MOVLW 31H                   ;sendo 1, 2-1=1 saltou próxima linha o que significa que dezena metalica é 1
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 1
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna  
+CASE_DEZENA_METALICA_2  ;verifica se valor de dezena metalica é 2
+    MOVF DEZENA_METALICA,W
+    SUBLW 03H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 3
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_DEZENA_METALICA_3 ;se diferente de 1 não salta próxima linha verifica demais valores  
+    MOVLW 32H                   ;sendo 2, 3-2=1 saltou próxima linha o que significa que dezena metalica é 2
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 2
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna  
+CASE_DEZENA_METALICA_3  ;verifica se valor de dezena metalica é 3
+    MOVF DEZENA_METALICA,W 
+    SUBLW 04H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 4      
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0 
+    GOTO CASE_DEZENA_METALICA_4 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 33H                   ;sendo 3, 4-3=1 saltou próxima linha o que significa que dezena metalica é 3
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 3
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_4  ;verifica se valor de dezena metalica é 4
+    MOVF DEZENA_METALICA,W
+    SUBLW 05H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 5
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_5 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 34H                   ;sendo 4, 5-4=1 saltou próxima linha o que significa que dezena metalica é 4
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 4 
+    CALL DELAY_ISMS 
+    RETURN ;encontrado valor retorna  
+CASE_DEZENA_METALICA_5  ;verifica se valor de dezena metalica é 5
+    MOVF DEZENA_METALICA,W
+    SUBLW 06H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 6
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_6 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 35H                   ;sendo 5, 6-5=1 saltou próxima linha o que significa que dezena metalica é 5
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 5
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_6  ;verifica se valor de dezena metalica é 6
+    MOVF DEZENA_METALICA,W 
+    SUBLW 07H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 7
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_7 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 36H                   ;sendo 6, 7-6=1 saltou próxima linha o que significa que dezena metalica é 6
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 6
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_7  ;verifica se valor de dezena metalica é 7
+    MOVF DEZENA_METALICA,W
+    SUBLW 08H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 8
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_8 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 37H                   ;sendo 7, 8-7=1 saltou próxima linha o que significa que dezena metalica é 7 
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 7
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_8   ;verifica se valor de dezena metalica é 8
+    MOVF DEZENA_METALICA,W
+    SUBLW 09H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 9
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_9 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 38H                   ;sendo 8, 9-8=1 saltou próxima linha o que significa que dezena metalica é 8  
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor  8
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_9  ;verifica se valor de dezena metalica é 9
+    MOVF DEZENA_METALICA,W
+    SUBLW 0ah
+    MOVWF RESULTADO      ;move para resultado subtração de dezena metalica por 10
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_METALICA_0 ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 39H                   ;sendo 9, 10-9=1 saltou próxima linha o que significa que dezena metalica é 9 
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 9
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_METALICA_0  ;não sendo valores ja verificados é 0
+    MOVLW 30H           ;é impresso então no lcd código ASCII referente ao valor é 0
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;--------------------------------------------------------------------------------------------------------------------------------
+
+IMPRIMI_UNIDADE_PLASTICA_NO_LCD ;sub-rotina responsável por verficar o valor da unidade plástica
+    MOVF UNIDADE_PLASTICA,W 
+    SUBLW 02H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 2
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_2_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 31H                    ;sendo 1, 2-1=1 saltou próxima linha o que significa que unidade plástica é 1 
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 1
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_2_PLASTICA   ;verifica se valor de unidade plástica é 2   
+    MOVF UNIDADE_PLASTICA,W 
+    SUBLW 03H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 3
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_3_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 32H                    ;sendo 2, 3-2=1, saltou próxima linha o que significa que unidade plástica é 2 
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 2
+    CALL DELAY_ISMS
+   RETURN  ;encontrado valor retorna
+CASE_UNIDADE_3_PLASTICA  ;verifica se valor de unidade plástica é 3
+    MOVF UNIDADE_PLASTICA,W 
+    SUBLW 04H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 4
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_4_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 33H                    ;sendo 3, 4-3=1 saltou próxima linha o que significa que unidade plástica é 3
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 3
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_4_PLASTICA  ;verifica se valor de unidade plástica é 4
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 05H
+    MOVWF RESULTADO       ;move para resultado subtração de unidade plástica por 5
+    DECFSZ RESULTADO,F    ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_5_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 34H                    ;sendo 4, 5-4=1 saltou próxima linha o que significa que unidade plástica é 4 
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 4
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_5_PLASTICA  ;verifica se valor de unidade plástica é 5
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 06H
+    MOVWF RESULTADO       ;move para resultado subtração de unidade plástica por 6
+    DECFSZ RESULTADO,F    ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_6_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 35H                    ;sendo 5, 6-5=1 saltou próxima linha o que significa que unidade plástica é 5 
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 5
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_6_PLASTICA  ;verifica se valor de unidade plástica é 6
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 07H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 7
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_7_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 36H                    ;sendo 6, 7-6=1 saltou próxima linha o que significa que unidade plástica é 6  
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 6
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_7_PLASTICA  ;verifica se valor de unidade plástica é 7
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 08H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 8
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_8_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 37H                    ;sendo 7, 8-7=1 saltou próxima linha o que significa que unidade plástica é 7  
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 7 
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_8_PLASTICA  ;verifica se valor de unidade plástica é 8
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 09H
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 9
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_9_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 38H                    ;sendo 8, 9-8=1 saltou próxima linha o que significa que unidade plástica é 8
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 8
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_9_PLASTICA  ;verifica se valor de unidade plástica é 9
+    MOVF UNIDADE_PLASTICA,W
+    SUBLW 0aH
+    MOVWF RESULTADO      ;move para resultado subtração de unidade plástica por 10
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_UNIDADE_0_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores   
+    MOVLW 39H                    ;sendo 9, 10-9=1 saltou próxima linha o que significa que unidade plástica é 9
+    CALL WR_DADO                 ;é impresso então no lcd código ASCII referente ao valor 9
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_UNIDADE_0_PLASTICA  ;não sendo valores ja vefiricados é 0
+    MOVLW 30H            ;é impresso então no lcd código ASCII referente ao valor 0
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+IMPRIMI_DEZENA_PLASTICA_NO_LCD  ;sub-rotina responsável por verficar o valor da dezena plástica    
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 02H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 2
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_2_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores   
+    MOVLW 31H                   ;sendo 1, 2-1=1 saltou próxima linha o que significa que dezena plástica é 1
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 1
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_2_PLASTICA  ;verifica se valor de dezena plástica é 2
+    MOVF DEZENA_PLASTICA,W 
+    SUBLW 03H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 3
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_3_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores   
+    MOVLW 32H                   ;sendo 2, 3-2=1 saltou próxima linha o que significa que dezena plástica é 2
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 2
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_3_PLASTICA  ;verifica se valor de dezena plástica é 3 
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 04H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 4
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_4_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores    
+    MOVLW 33H                   ;sendo 3, 4-3=1 saltou próxima linha o que significa que dezena plástica é 3
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 3
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_4_PLASTICA  ;verifica se valor de dezena plástica é 4
+    MOVF DEZENA_PLASTICA,W 
+    SUBLW 05H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 5
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_5_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores    
+    MOVLW 34H                   ;sendo 4, 5-4=1 saltou próxima linha o que significa que dezena plástica é 4
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 4
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_5_PLASTICA  ;verifica se valor de dezena plástica é 5
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 06H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 6
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_6_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores  
+    MOVLW 35H                   ;sendo 5, 6-5=1 saltou próxima linha o que significa que dezena plástica é 5
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 5
+    CALL DELAY_ISMS 
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_6_PLASTICA  ;verifica se valor de dezena plástica é 6
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 07H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 7
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_7_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 36H                   ;sendo 6, 7-6=1 saltou próxima linha o que significa que dezena plástica é 6
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 6
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_7_PLASTICA  ;verifica se valor de dezena plástica é 7
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 08H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 8
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_8_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 37H                   ;sendo 7, 8-7=1 saltou próxima linha o que significa que dezena plástica é 7
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 7
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_8_PLASTICA  ;verifica se valor de dezena plástica é 8
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 09H
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 9
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_9_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 38H                   ;sendo 8, 9-8=1 saltou próxima linha o que significa que dezena plástica é 8
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 8
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna
+CASE_DEZENA_9_PLASTICA  ;verifica se valor de dezena plástica é 9
+    MOVF DEZENA_PLASTICA,W
+    SUBLW 0ah
+    MOVWF RESULTADO      ;move para resultado subtração de dezena plástica por 10
+    DECFSZ RESULTADO,F   ;decrementando resultado e saltando próxima linha se for 0
+    GOTO CASE_DEZENA_0_PLASTICA ;se diferente de 1 não salta próxima linha verifica demais valores
+    MOVLW 39H                   ;sendo 9, 10-9=1 saltou próxima linha o que significa que dezena plástica é 9
+    CALL WR_DADO                ;é impresso então no lcd código ASCII referente ao valor 9
+    CALL DELAY_ISMS
+    RETURN  ;encontrado valor retorna 
+CASE_DEZENA_0_PLASTICA  ;não sendo valores ja vefiricados é 0
+    MOVLW 30H           ;é impresso então no lcd código ASCII referente ao valor 0
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+ 
+INTERFACE_INICIAL ;rotina imprimi mensagem: seleção parada, seleção é a etada do processo insdutrial que esta sendo automatizada
+    MOVLW 01H      ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST   ;coloca no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS;pequeno retado
+    MOVLW 'S'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 35H
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 30H
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 30H 
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 0C0H        ;mudança de linha para imprimir 
+    CALL WR_INST
+    CALL DELAY_ISMS 
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'G'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;-----------------------------------------------------------------------------------------------------------------------------------
+
+PROTECAO_ATUADA     ;rotina imprimi mensagem: rele atuado para interface com usuário   
+    MOVLW 01H         ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST      ;coloca display no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS   ;perqueno retardo
+    MOVLW 'P'         ;imprime digito por digito da messagem
+    CALL WR_DADO      ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'U'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS  
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;---------------------------------------------------------------------------------------------------------------------------------
+
+EMBALAGEM_METALICA    ;rotina imprimi mensagem: seleção parada, seleção é a etada do processo insdutrial que esta sendo automatizada
+    MOVLW 01H      ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST   ;coloca no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS;pequeno retado
+    MOVLW 'E'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'M'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'B'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW '.'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'M'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ':'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN 
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+EMBALAGEM_PLASTICA     ;rotina imprimi mensagem: seleção parada, seleção é a etada do processo insdutrial que esta sendo automatizada
+    MOVLW 'E'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'M'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'B'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW '.'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'P'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'      ;imprime digito por digito da messagem
+    CALL WR_DADO   ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ':'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;---------------------------------------------------------------------------------------------------------------------------------
+
+CHAVE_DESLIGADA     ;rotina imprimi mensagem: rele atuado para interface com usuário   
+    MOVLW 01H         ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST      ;coloca display no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS   ;perqueno retardo
+    MOVLW 'C'         ;imprime digito por digito da messagem
+    CALL WR_DADO      ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'H'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'V'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'G'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS  
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+NUMERO_DE_EMBALAGEM_METALICA ;imprimi no lcd o numero de embalagens metalica
+    MOVLW 01H                    ;limpa lcd
+    CALL WR_INST  
+    CALL DELAY_ISMS
+    CALL EMBALAGEM_METALICA     ;imprimi mensagem:embalagem metalica
+    CALL IMPRIMI_DEZENA_METALICA_NO_LCD  ;imprimi dezena e unidade referente ao numero de embalagens metelicas  
+    CALL IMPRIMI_UNIDADE_METALICA_NO_LCD
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+NUMERO_DE_EMBALAGEM_PLASTICA ;imprimi no lcd o numero de embalagens plásticas 
+    MOVLW 0C0H                  ;muda para segunda linha                    
+    CALL WR_INST
+    CALL DELAY_ISMS
+    CALL EMBALAGEM_PLASTICA             ;imprimi no lcd mensagem:embalagem plástica
+    CALL IMPRIMI_DEZENA_PLASTICA_NO_LCD ;imprimi valor de dezena e unidade referente ao numero de embalagens plasticas 
+    CALL IMPRIMI_UNIDADE_PLASTICA_NO_LCD
+    CALL DELAY_TEST                     ;pequeno retardo esse retardo simula o tempo que a embalagem fica presente na frente do sensor
+    CALL DELAY_TEST
+RETURN
+
+;---------------------------------------------------------------------------------------------------------------------------------
+
+ZERAR_CONTAGEM
+   MOVLW 0H
+   MOVWF UNIDADE_METALICA
+   MOVLW 0H
+   MOVWF DEZENA_METALICA
+   MOVLW 0H
+   MOVWF UNIDADE_PLASTICA
+   MOVLW 0H
+   MOVWF DEZENA_PLASTICA
+RETURN
+
+;----------------------------------------------------------------------------------------------------------------------------------
+
+ERRO_1   
+    MOVLW 01H         ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST      ;coloca display no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS   ;perqueno retardo
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW '-'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 31H
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 0C0H                  ;muda para segunda linha                    
+    CALL WR_INST
+    CALL DELAY_ISMS
+    MOVLW 'D'         ;imprime digito por digito da messagem
+    CALL WR_DADO      ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'F'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'C'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'M'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS  
+    MOVLW 'N'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS  
+    MOVLW 'S'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+RETURN
+
+ERRO_2
+    MOVLW 01H         ;Limpa display e retorna o cursor para o inicio
+    CALL WR_INST      ;coloca display no modo de instrução para enviar informação ao PORTD 
+    CALL DELAY_ISMS   ;perqueno retardo
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'O'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW '-'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 32H
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 0C0H                  ;muda para segunda linha                    
+    CALL WR_INST
+    CALL DELAY_ISMS
+    MOVLW 'F'         ;imprime digito por digito da messagem
+    CALL WR_DADO      ;sendo que agora coloca display no modo de dado para enviar informação ao PORTD
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'D'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW ' '
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'M'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'T'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'E'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'R'
+    CALL WR_DADO
+    CALL DELAY_ISMS  
+    MOVLW 'I'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'A'
+    CALL WR_DADO
+    CALL DELAY_ISMS
+    MOVLW 'L'
+RETURN  
+
+END
+
